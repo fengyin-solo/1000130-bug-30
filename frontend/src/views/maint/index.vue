@@ -23,6 +23,13 @@
         <span>{{ field }}</span>
         <input v-model="filters[field]" :placeholder="`按${field}检索`" />
       </label>
+      <label class="filter-item">
+        <span>工单状态</span>
+        <select v-model="filters.status">
+          <option value="">全部状态</option>
+          <option v-for="status in statuses" :key="status" :value="status">{{ status }}</option>
+        </select>
+      </label>
       <button class="btn" type="submit">查询</button>
       <button class="btn ghost" type="button" @click="resetFilters">重置条件</button>
     </form>
@@ -31,26 +38,38 @@
       <thead>
         <tr>
           <th v-for="column in columns" :key="column">{{ column }}</th>
+          <th>工单状态</th>
           <th>可执行动作</th>
         </tr>
       </thead>
       <tbody>
         <tr v-for="row in rows" :key="String(row.id)">
-          <td v-for="column in columns" :key="column">{{ row[column] ?? '—' }}</td>
+          <td v-for="column in columns" :key="column">
+            <RouterLink v-if="column === '工单编号'" class="link" :to="`/maint/${row.id}`">
+              {{ row[column] ?? '—' }}
+            </RouterLink>
+            <template v-else>{{ row[column] ?? '—' }}</template>
+          </td>
+          <td>
+            <span class="status-tag" :class="statusClass(row.status)">{{ row.status ?? '—' }}</span>
+          </td>
           <td class="row-actions">
             <button
               v-for="action in actions"
               :key="action"
               class="link"
               type="button"
+              :disabled="!canRun(action, row)"
+              :title="canRun(action, row) ? action : actionHint(action, row)"
               @click="runAction(action, row)"
             >
               {{ action }}
             </button>
+            <RouterLink class="link" :to="`/maint/${row.id}`">详情</RouterLink>
           </td>
         </tr>
         <tr v-if="!rows.length">
-          <td :colspan="columns.length + 1" class="empty-state">暂无维保工单数据，可先登记维保工单</td>
+          <td :colspan="columns.length + 2" class="empty-state">暂无维保工单数据，可先登记维保工单</td>
         </tr>
       </tbody>
     </table>
@@ -73,6 +92,12 @@ const ENDPOINT = '/api/maint'
 const columns = ["工单编号", "关联设备", "故障现象", "紧急程度", "报修人", "受理班组", "期望完成时间"]
 const actions = ["受理工单", "派工处理", "关闭工单"]
 const statuses = ["待受理", "处理中", "待验收", "已关闭"]
+// 与后端状态机保持一致：只在工单当前状态允许时给出可点击入口
+const ACTION_FROM: Record<string, string[]> = {
+  '受理工单': ['待受理'],
+  '派工处理': ['处理中'],
+  '关闭工单': ['处理中', '待验收'],
+}
 const stats = [{"label": "待受理工单", "value": 0}, {"label": "超时工单", "value": 0}, {"label": "平均处理时长", "value": 0}]
 
 const rows = ref<Row[]>([])
@@ -80,6 +105,26 @@ const total = ref(0)
 const errorMessage = ref('')
 const filters = ref<Record<string, string>>({})
 const filterFields = columns.slice(0, 3)
+
+function canRun(action: string, row: Row): boolean {
+  return ACTION_FROM[action].includes(String(row.status))
+}
+
+function actionHint(action: string, row: Row): string {
+  if (String(row.status) === '已关闭') {
+    return '工单已关闭，不能重复操作'
+  }
+  return `当前为「${row.status}」状态，不能执行${action}`
+}
+
+function statusClass(status: unknown): string {
+  return {
+    '待受理': 'status-pending',
+    '处理中': 'status-doing',
+    '待验收': 'status-checking',
+    '已关闭': 'status-closed',
+  }[String(status)] ?? ''
+}
 
 function resetFilters() {
   filters.value = {}
@@ -96,13 +141,18 @@ function openCreate() {
 
 async function runAction(action: string, row: Row) {
   errorMessage.value = ''
+  if (!canRun(action, row)) {
+    errorMessage.value = actionHint(action, row)
+    return
+  }
   try {
     const response = await request(`${ENDPOINT}/${row.id}/actions`, {
       method: 'POST',
-      body: JSON.stringify({ action }),
+      body: JSON.stringify({ values: { action } }),
     })
-    if (!response.ok) {
-      throw new Error('维保工单动作未生效，请稍后重试')
+    const payload = await response.json().catch(() => null) as { ok?: boolean; message?: string } | null
+    if (!response.ok || !payload?.ok) {
+      throw new Error(payload?.message || '维保工单动作未生效，请稍后重试')
     }
     await reload()
   } catch (error) {
@@ -128,3 +178,25 @@ async function reload() {
 
 onMounted(reload)
 </script>
+
+<style scoped>
+.page-actions {
+  display: flex;
+  gap: 8px;
+}
+.status-tag {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 10px;
+  font-size: 12px;
+  border: 1px solid var(--border);
+}
+.status-pending { color: #b54708; background: #fffaeb; border-color: #fedf89; }
+.status-doing { color: #175cd3; background: #eff8ff; border-color: #b2ddff; }
+.status-checking { color: #b93816; background: #fff4ed; border-color: #f9dbaf; }
+.status-closed { color: #475467; background: #f2f4f7; border-color: #d0d5dd; }
+.row-actions .link:disabled {
+  color: #98a2b3;
+  cursor: not-allowed;
+}
+</style>
